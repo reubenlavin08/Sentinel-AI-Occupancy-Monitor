@@ -1,0 +1,13 @@
+# Database (generated at runtime)
+occupancy_log.db
+
+# Claude Code config
+.claude/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment / secrets
+.env
