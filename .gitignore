@@ -1,5 +1,15 @@
 # Database (generated at runtime)
 occupancy_log.db
+occupancy_log_*.db
+*.db-wal
+*.db-shm
+
+# Event media (generated at runtime)
+clips/
+snapshots/
+
+# Virtual environment
+.venv/
 
 # Claude Code config
 .claude/

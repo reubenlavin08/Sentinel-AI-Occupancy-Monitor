@@ -1,70 +1,76 @@
+"""Sentinel multi-camera occupancy dashboard (Phase 5).
+
+Per-camera + total occupancy, entries/exits, an occupancy-over-time chart, and a
+recent-events log. Reads the WAL database without blocking the live writer.
+Run:  streamlit run dashboard.py
+"""
 import streamlit as st
 import sqlite3
 import pandas as pd
 import time
 import os
 
-# --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="Sentinel Occupancy Dashboard", layout="wide")
-st.title("Live Camera Occupancy Analytics")
+st.set_page_config(page_title="Sentinel Occupancy", layout="wide")
+st.title("Sentinel — Multi-Camera Occupancy")
 
-# --- DATABASE CONNECTION ---
 script_dir = os.path.dirname(os.path.abspath(__file__))
-db_path = os.path.join(script_dir, 'occupancy_log.db')
+db_path = os.path.join(script_dir, "occupancy_log.db")
+
 
 def load_data():
-    """Reads the SQLite database and returns it as a Pandas DataFrame."""
     try:
-        # timeout=10 prevents the 'database is locked' crash
-        conn = sqlite3.connect(db_path, timeout=10) 
-        
-        # We use Pandas to execute the SQL query and format it into a data table
+        conn = sqlite3.connect(db_path, timeout=10)
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA busy_timeout=5000;")
         df = pd.read_sql_query("SELECT * FROM traffic_events", conn)
         conn.close()
         return df
     except Exception as e:
-        st.error(f"Database Error: {e}")
-        return pd.DataFrame() # Return empty table if it fails
+        st.error(f"Database error: {e}")
+        return pd.DataFrame()
 
-# --- UI LAYOUT & REFRESH LOGIC ---
-# We create an empty container so we can overwrite it with live data
+
 placeholder = st.empty()
 
-# This loop forces the dashboard to poll the database every 2 seconds
 while True:
     df = load_data()
-    
     with placeholder.container():
         if df.empty:
-            st.warning("No data found in the database. Walk through the camera view to generate logs.")
+            st.warning("No data yet — walk through a camera view to generate events.")
         else:
-            # Extract the most recent occupancy number
-            current_occupancy = df.iloc[-1]['occupancy']
-            total_in = len(df[df['event_type'] == 'IN'])
-            total_out = len(df[df['event_type'] == 'OUT'])
-            
-            # --- TOP METRICS ROW ---
-            col1, col2, col3 = st.columns(3)
-            col1.metric(label="Current Occupancy", value=current_occupancy)
-            col2.metric(label="Total Daily Entries", value=total_in)
-            col3.metric(label="Total Daily Exits", value=total_out)
-            
-            st.markdown("---")
-            
-            # --- DATA VISUALIZATION ---
-            st.subheader("Occupancy Over Time")
-            
-            # Convert timestamp text to actual DateTime objects for graphing
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-            # Set the timestamp as the index so the chart knows what the X-axis is
-            df.set_index('timestamp', inplace=True)
-            
-            # Draw the line chart tracking the 'occupancy' column
-            st.line_chart(df['occupancy'])
-            
-            st.markdown("---")
-            st.subheader("Raw Event Log")
-            st.dataframe(df.tail(10)) # Show the 10 most recent crossings
+            if "camera" not in df.columns:
+                df["camera"] = "unknown"
+            df["camera"] = df["camera"].fillna("unknown")
+            cams = sorted(df["camera"].unique())
 
-    # Pause for 2 seconds before querying the database again
+            # current occupancy per camera = the latest occupancy value logged for it
+            last = df.sort_values("id").groupby("camera").tail(1).set_index("camera")["occupancy"]
+            total = int(last.sum())
+
+            cols = st.columns(len(cams) + 1)
+            cols[0].metric("TOTAL Occupancy", total)
+            for i, cam in enumerate(cams):
+                cols[i + 1].metric(f"{cam}", int(last.get(cam, 0)))
+
+            st.markdown("---")
+
+            left, right = st.columns(2)
+            with left:
+                st.subheader("Entries / Exits per camera")
+                io = (df.groupby(["camera", "event_type"]).size()
+                        .unstack(fill_value=0))
+                st.dataframe(io, use_container_width=True)
+            with right:
+                st.subheader("Recent events")
+                cols_show = [c for c in ["timestamp", "camera", "event_type", "occupancy"] if c in df.columns]
+                st.dataframe(df.tail(15)[cols_show], use_container_width=True)
+
+            st.markdown("---")
+            st.subheader("Occupancy over time (per camera)")
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+            pivot = (df.pivot_table(index="timestamp", columns="camera",
+                                    values="occupancy", aggfunc="last")
+                       .ffill())
+            st.line_chart(pivot)
+
     time.sleep(2)

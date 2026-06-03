@@ -6,8 +6,11 @@ from datetime import datetime
 from ultralytics import YOLO
 
 # 1. Database Initialization (The Vault)
+import sys
+CAM_LABEL = sys.argv[1] if len(sys.argv) > 1 else 'cam'
+CAM_URL = sys.argv[2] if len(sys.argv) > 2 else "http://<USERNAME>:<PASSWORD>@<CAMERA_IP>:<PORT>/video"
 script_dir = os.path.dirname(os.path.abspath(__file__))
-db_path = os.path.join(script_dir, 'occupancy_log.db')
+db_path = os.path.join(script_dir, f'occupancy_log_{CAM_LABEL}.db')
 
 print(f"Connecting to local database at: {db_path}...")
 conn = sqlite3.connect(db_path)
@@ -30,7 +33,7 @@ print(f"Loading Compiled OpenVINO Pose model from: {model_path} ...")
 model = YOLO(model_path, task='pose') 
 
 # 3. Network Stream Connection
-url = "http://<USERNAME>:<PASSWORD>@<CAMERA_IP>:<PORT>/video"
+url = CAM_URL
 print(f"Attempting to connect to {url}...")
 stream = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
 
@@ -39,7 +42,7 @@ if not stream.isOpened():
     input("Press Enter to exit...")
     exit()
 
-window_name = "AI Occupancy Monitor (Data Logging Edition)"
+window_name = f"Sentinel - {CAM_LABEL}"
 cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 cv2.resizeWindow(window_name, 640, 480)
 
