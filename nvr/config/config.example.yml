@@ -6,8 +6,18 @@ mqtt:
   enabled: false            # enable + add a broker if you want UI toggles + zone occupancy counts
 
 detectors:
-  cpu1:
-    type: cpu               # CPU detector (fine for a few cams); OpenVINO/GPU is the upgrade
+  ov:
+    type: openvino          # OpenVINO-CPU is ~2.3x faster than the default `cpu` detector
+    device: CPU             # use GPU if you can pass /dev/dri (not available under WSL2 Docker)
+
+# Bundled OpenVINO ssdlite_mobilenet_v2 model (ships in the Frigate image)
+model:
+  width: 300
+  height: 300
+  input_tensor: nhwc
+  input_pixel_format: bgr
+  path: /openvino-model/ssdlite_mobilenet_v2.xml
+  labelmap_path: /openvino-model/coco_91cl_bkgr.txt
 
 go2rtc:
   streams:
@@ -26,7 +36,7 @@ cameras:
           roles: [detect, record]        # NOTE: 'record' role is required for recording to work
     detect:
       enabled: true
-      fps: 5
+      fps: 3
       width: 1280                          # set explicit w/h — skips a startup probe that can deadlock
       height: 720
 
@@ -38,7 +48,7 @@ cameras:
           roles: [detect, record]
     detect:
       enabled: true
-      fps: 5
+      fps: 3
       width: 480
       height: 640
 
