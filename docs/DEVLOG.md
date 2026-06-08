@@ -1,0 +1,45 @@
+# Home Camera Network — DEVLOG
+
+Running log of the Frigate-based build: what works, hard-won lessons, and the plan.
+
+## Current state (2026-06-07)
+- **Frigate 0.17** (Docker/WSL2 on the Windows PC) is the NVR. UI: **http://localhost:5000** (LAN: **http://192.168.1.242:5000** — firewall rule "Frigate UI (5000)" added; set network to Private for it to work).
+- **4 cameras**, fed via go2rtc:
+  - `tab_a` — Galaxy Tab A, H.264 RTSP `rtsp://192.168.1.144:8080/h264_ulaw.sdp#media=video` (audio dropped — PCMU broke the MSE grid tile).
+  - `tab_e` — Galaxy Tab E, **MJPEG only** `http://192.168.1.76:8080/video` (too old for H.264).
+  - `iphone` — iPhone 5S, HTTP-FLV `http://192.168.1.136:8081/live.flv#video=copy`.
+  - `iphone2` — newer iPhone (exterior), `http://192.168.1.236:8081/live.flv#video=copy` (**IP drifts** — pin via DHCP reservation).
+- **Detection ON** (person + car), **recording** (motion, 3 days) + **snapshots** (7 days) enabled.
+
+## Hard-won lessons (Frigate gotchas)
+1. **Format beats everything on weak devices.** H.264 (hardware-encoded) plays natively in Frigate's player + is light. MJPEG is heavy AND Frigate must transcode it for the web player ("Live view in low-bandwidth mode"). Prefer H.264 where the device supports it.
+2. **PCMU audio breaks the MSE grid tile** — add `#media=video` to drop audio from a camera that includes it (Tab A).
+3. **The "ghost clients" pileup** = Frigate PULLING from a flaky phone: each failed read + each Frigate restart leaves a half-open connection the phone never releases → 9, 22 "clients" → the phone overloads and serves garbage to everyone ("Invalid data found when processing input", even on healthy cams). Fixes: stop restarting; force-quit/reopen the phone app to clear stale connections; ultimately switch to PUSH (see STREAMING.md).
+4. **Phone IPs drift** (.132 → .236). Pin them with DHCP reservations, or go push (phone dials the PC's fixed IP) so its IP stops mattering.
+5. **MQTT-off makes the UI toggles a trap.** The per-camera **disable** and **detection** toggles in the Frigate UI rely on MQTT (disabled here) — they flip OFF but won't flip back ON, and get stuck. **Don't use the UI toggles.** Enable/disable via config (`enabled: true`, `detect.enabled: true`) + restart. (Add an MQTT broker if you want working UI toggles + occupancy counts.)
+6. **Record needs a `record` role on a camera input** — `record.enabled: true` alone does nothing without `roles: [detect, record]`.
+7. **Frigate 0.17 record schema:** NOT `record.retain.{days,mode}` (that errors → **safe mode**, cameras vanish). Use `record.continuous.days` + `record.motion.days` + `record.alerts.retain.days` + `record.detections.retain.days`.
+8. **Config-edit conflict:** don't edit config in the Frigate UI editor while editing the file on disk — they clobber each other (UI saves were 400-ing).
+9. **A dead camera DEADLOCKS Frigate startup — and `enabled: false` does NOT save you.** Frigate 0.17 probes *every* camera in the config at startup (OpenCV `cap_ffmpeg` open), including disabled ones. If a camera's stream is reachable-but-not-delivering (e.g. Tab A's IP Webcam app hung: port 8080 open but `/video` returns no data), that probe hangs **30 s and the whole app deadlocks** — API never comes up, "Stream timeout triggered after 30000 ms" in `/dev/shm/logs/frigate/current`, CPU near-idle (blocked, not busy). Fix: **REMOVE the dead camera's block entirely** (comment it out), not just `enabled: false`. Diagnose the hung stream with `ffprobe` (it returns nothing) vs a healthy one. App logs live in `/dev/shm/logs/frigate/current`, NOT docker stdout (which is just nginx).
+
+### 2026-06-07 (late) — recovered state
+Down to **2 reliable cameras: tab_e (MJPEG) + iphone 5S (FLV restream)**, both with **explicit `detect.width/height`** (skip the resolution probe), person+car detection, recording (motion 3d) + snapshots (7d). **tab_a REMOVED** (IP Webcam app hung — force-restart the app, then re-add) and **iphone2 REMOVED** (exterior, weak Wi-Fi — re-add after push/Wi-Fi fix). Going forward: always set explicit width/height, and never leave a dead camera (even disabled) in the config.
+
+## Roadmap
+- **Step 2 — Recognition:** enable Frigate **face recognition** ("who is it") + **license-plate recognition** ("which car"). Native in 0.16+. Needs decent resolution on the face/plate; benefits from GPU.
+- **Step 3 — Alerts:** notify on person/car per camera. Options: Frigate native web-push (needs HTTPS), or MQTT broker → Discord (fits existing webhooks) / ntfy.
+- **Reliability (weak outdoor Wi-Fi):** see STREAMING.md — switch to **push (SRT via Larix → MediaMTX)**, and physically **2.4 GHz now / outdoor PoE AP later**.
+- **Occupancy "who's inside":** Frigate gives live *visible* counts (per zone, via MQTT); persistent whole-building headcount = **Sentinel tripwire** (entry/exit). Future: add **person recognition in Sentinel** for identity. (Sentinel refactor is paused at `origin/refactor` bfd0ed5.)
+- **Future hardware — purpose-built ESP cams:** ESP32-S3 + OV2640. **Build them WIRED (PoE or W5500 Ethernet)** to eliminate the Wi-Fi problem entirely — the big advantage of rolling your own vs phones. (A C6 can't relay a camera's stream — it's a microcontroller, not a bridge.)
+- **See HARDWARE.md** for the research-backed buy plan (PoE cams + wireless bridge + budget).
+
+### 2026-06-07 (evening) — reliability deep-dive (ghost connections, frozen apps, intermittency)
+- **Root cause of "Tab A won't connect to Frigate even though the port is open":** a **ghost-connection pileup**. Found **72 connections from `com.docker.backend` → .144** stuck in **FinWait2** (PC side) / **CLOSE_WAIT** (tablet side) — they had **exhausted IP Webcam's connection pool**, so the tablet accepted the TCP handshake (OS) but never served a response (app slots full). Built by Frigate **retry-storming** a flaky device; they **survive container restarts** because they live in Docker's Windows-side network proxy, not the container.
+- **The fix that cleared them:** force a **TCP RST** via `SetTcpEntry` (iphlpapi.dll), setting each row's state to `DELETE_TCB` (12), run **elevated**. Cleared all 72 → 0. NOTE: killing `com.docker.backend` did **not** clear them (graceful FinWait2, no RST) — you must RST.
+- **Clearing the ghost connections did NOT revive Tab A — it required a MANUAL tablet reset (user-confirmed).** The elevated RST that appeared to "coincide" with recovery actually reset **0 connections** (they'd already drained) — so it did nothing. The tablet came back because the user physically restarted the IP Webcam app / tablet at that moment. **Correct conclusion: Tab A's app was genuinely frozen at the process level (HTTP `/status.json` + RTSP both dead), and NO remote action recovered it — a physical app/device restart was required.** The ghost-pileup diagnosis and the `SetTcpEntry` RST trick (above) are real and worth keeping, but RST clears the *connection clog*; it does **not** restart a frozen app process. Don't conflate the two. (I initially mis-credited the recovery to my RST — the script output `RST sent to 0 of 0` proves it didn't.)
+- **LESSON: ping sweeps LIE about phones.** Wi-Fi power-saving drops ICMP, so a phone shows "dead" to ping while its camera port is fine. **Verify presence with a TCP connect to the camera port, not ping.** (This cost me: I wrongly declared the 5S "off-network" and removed a *working* camera.)
+- **LESSON: don't re-add a dead-but-port-open camera.** Re-adding restarts the crash-loop that **re-clogs** the device with ghost connections (saw .144 rebuild 2→17 in seconds). Only re-add once it **ffprobes clean**.
+- **iPhone 5S intermittency explained:** iOS **suspends the app** when backgrounded/screen-locked + **Wi-Fi power-saving** + it's **iOS 12 on ~11-yr-old hardware** (thermal throttling, weak radio). When the app pauses → go2rtc 404 → ffmpeg crash-loops → reconnects when the app wakes (22 reconnects logged in one session). The **newer iPhone (iphone2) stays solid at 5 fps** → it's the device. Fix: foreground + auto-lock OFF + charging; ultimately **push**.
+- **Network-reset research:** rebooting the router does **NOT** fix a frozen app — only an app/device restart does ([Google](https://support.google.com/android/answer/7664998)). Remote device reboot needs **ADB-over-Wi-Fi (Bugjaeger)** or MDM, **enabled beforehand** (not set up on Tab A). Gateway is reachable at 192.168.1.254 but rebooting it just drops the working cams for no benefit.
+- **MediaMTX (push server) attempt:** `docker run` for MediaMTX **failed — host port 8554 already allocated by Frigate's go2rtc**. When building push, map MediaMTX's RTSP to a different host port (e.g. 8555) or run it in Frigate's network.
+- **Stable end state: ALL 4 LIVE** — `tab_a` (MJPEG 1280x720, ~6 fps, **recovered via a MANUAL tablet reset**, then re-added to config), `tab_e` (MJPEG, ~3 fps, old), `iphone` (5S, ~5 fps but **intermittent** by nature), `iphone2` (solid 5 fps). Person+car detect + recording on all four.

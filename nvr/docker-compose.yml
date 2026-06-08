@@ -1,0 +1,21 @@
+services:
+  frigate:
+    container_name: frigate
+    image: ghcr.io/blakeblackshear/frigate:stable
+    restart: unless-stopped
+    shm_size: "256mb"            # shared memory for frame passing; enough for 3 cams @ 720p
+    ports:
+      - "5000:5000"              # web UI (unauthenticated, LAN-only) -> http://localhost:5000
+      - "8971:8971"              # authenticated UI (Frigate 0.14+)
+      - "8554:8554"              # go2rtc RTSP restream
+      - "8555:8555/tcp"          # WebRTC
+      - "8555:8555/udp"
+    volumes:
+      - ./config:/config
+      - ./storage:/media/frigate
+      - type: tmpfs              # in-memory cache for clips before they're written
+        target: /tmp/cache
+        tmpfs:
+          size: 1000000000
+    environment:
+      FRIGATE_RTSP_PASSWORD: "frigate_local"

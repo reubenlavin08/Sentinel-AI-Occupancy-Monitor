@@ -1,0 +1,59 @@
+# Frigate config — EXAMPLE / template.
+# Copy to config.yml (gitignored) and fill in your own camera IPs.
+# This mirrors the working 4-camera setup; see ../../docs/DEVLOG.md for the hard-won lessons.
+
+mqtt:
+  enabled: false            # enable + add a broker if you want UI toggles + zone occupancy counts
+
+detectors:
+  cpu1:
+    type: cpu               # CPU detector (fine for a few cams); OpenVINO/GPU is the upgrade
+
+go2rtc:
+  streams:
+    # Each phone/tablet is restreamed once by go2rtc; both Frigate and Sentinel read from here.
+    cam_mjpeg:
+      - http://<CAMERA_IP>:8080/video                       # Android IP Webcam (MJPEG)
+    cam_flv:
+      - ffmpeg:http://<CAMERA_IP>:8081/live.flv#video=copy  # iOS IP Camera Lite (HTTP-FLV, H.264)
+
+cameras:
+  cam_mjpeg:
+    ffmpeg:
+      inputs:
+        - path: http://<CAMERA_IP>:8080/video
+          input_args: preset-http-mjpeg-generic
+          roles: [detect, record]        # NOTE: 'record' role is required for recording to work
+    detect:
+      enabled: true
+      fps: 5
+      width: 1280                          # set explicit w/h — skips a startup probe that can deadlock
+      height: 720
+
+  cam_flv:
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/cam_flv   # read from the go2rtc restream, never the phone directly
+          input_args: preset-rtsp-restream
+          roles: [detect, record]
+    detect:
+      enabled: true
+      fps: 5
+      width: 480
+      height: 640
+
+objects:
+  track: [person, car]
+
+record:
+  enabled: true
+  continuous: { days: 0 }
+  motion: { days: 3 }
+  alerts: { retain: { days: 14 } }
+  detections: { retain: { days: 14 } }
+
+snapshots:
+  enabled: true
+  retain: { default: 7 }
+
+version: 0.17-0

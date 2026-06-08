@@ -21,3 +21,20 @@ __pycache__/
 
 # Environment / secrets
 .env
+
+# ── NVR (Frigate) operational data — LOCAL ONLY, never commit ──
+# Real camera config (has LAN IPs); a sanitized config.example.yml is committed instead
+nvr/config/config.yml
+# Frigate runtime databases, secrets, caches
+nvr/config/*.db
+nvr/config/*.db-shm
+nvr/config/*.db-wal
+nvr/config/.jwt_secret
+nvr/config/go2rtc_homekit.yml
+nvr/config/backup*
+nvr/config/.exports/
+nvr/config/.timeline/
+nvr/config/.vacuum/
+nvr/config/model_cache/
+# Recorded footage / clips / snapshots (real surveillance data)
+nvr/storage/
